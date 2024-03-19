@@ -13,9 +13,9 @@ from utils import get_model
 warnings.filterwarnings("ignore")
 
 parser = argparse.ArgumentParser(description='')
-parser.add_argument('--batch_size', default=32, type=int)
+parser.add_argument('--batch_size', default=128, type=int)
 parser.add_argument('--seed', default=0, type=int)
-parser.add_argument('--data_path', default='./RAF-DB/Resized', type=str)
+parser.add_argument('--data_path', default='./fer2013.csv', type=str)
 parser.add_argument('--checkpoint', default='./best_checkpoint.tar', type=str)
 parser.add_argument('--arch', default="ResNet18", type=str)
 parser.add_argument('--Ncrop', default=True, type=eval)
@@ -141,16 +141,28 @@ def main():
     checkpoint = torch.load(args.checkpoint)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    train_loader, test_loader = get_dataloaders(augment=False)
+    train_loader, val_loader, test_loader = get_dataloaders(augment=False)
     with torch.no_grad():
         print("Train")
         train_eval = evaluate(model, train_loader, loss_fn, args.Ncrop, device)
         y_gt, y_pred = train_eval
         draw_confusion_matrix(label_true=y_gt,
                               label_pred=y_pred,
-                              label_name=["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"],
+                              label_name=["Angry", "Happy", "Sad", "Neutral"],
                               title="Confusion Matrix on Training Set",
                               pdf_save_path="Confusion Matrix on Training Set.png",
+                              dpi=300)
+
+        plt.clf()
+
+        print("Val")
+        val_eval = evaluate(model, val_loader, loss_fn, args.Ncrop, device)
+        y_gt, y_pred = val_eval
+        draw_confusion_matrix(label_true=y_gt,
+                              label_pred=y_pred,
+                              label_name=["Angry", "Happy", "Sad", "Neutral"],
+                              title="Confusion Matrix on Val Set",
+                              pdf_save_path="Confusion Matrix on Val Set.png",
                               dpi=300)
 
         plt.clf()
@@ -160,7 +172,7 @@ def main():
         y_gt, y_pred = test_eval
         draw_confusion_matrix(label_true=y_gt,
                               label_pred=y_pred,
-                              label_name=["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"],
+                              label_name=["Angry", "Happy", "Sad", "Neutral"],
                               title="Confusion Matrix on Test Set",
                               pdf_save_path="Confusion Matrix on Test Set.png",
                               dpi=300)

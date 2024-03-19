@@ -16,10 +16,16 @@ from utils import (Logger, get_model, mixup_criterion, mixup_data, random_seed, 
 
 warnings.filterwarnings("ignore")
 
-parser = argparse.ArgumentParser(description='USTC Computer Vision Final Project')
+# Set CUDA_LAUNCH_BLOCKING=1
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
+# Your CUDA-related code here
+
+
+parser = argparse.ArgumentParser(description='')
 parser.add_argument('--arch', default="ResNet18", type=str)
 parser.add_argument('--epochs', default=200, type=int)
-parser.add_argument('--batch_size', default=32, type=int)
+parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--scheduler', default="reduce", type=str, help='[reduce, cos]')
 parser.add_argument('--lr', default=0.1, type=float)
 parser.add_argument('--momentum', default=0.9, type=float)
@@ -29,7 +35,7 @@ parser.add_argument('--label_smooth_value', default=0.1, type=float)
 parser.add_argument('--mixup', default=True, type=eval)
 parser.add_argument('--mixup_alpha', default=1.0, type=float)
 parser.add_argument('--Ncrop', default=True, type=eval)
-parser.add_argument('--data_path', default='./AffectNet-8/valid', type=str)
+parser.add_argument('--data_path', default='./fer2013.csv', type=str)
 parser.add_argument('--results', default='./results', type=str)
 parser.add_argument('--save_freq', default=10, type=int)
 parser.add_argument('--resume', default=0, type=int)
@@ -74,9 +80,9 @@ def main():
     #     path=args.data_path,
     #     bs=args.batch_size, augment=True)
 
-    train_loader, test_loader = get_dataloaders(
+    train_loader, val_loader, test_loader = get_dataloaders(
         path=args.data_path,
-        bs=32)
+        bs=args.batch_size)
 
     logger.info('Start load model %s ...', args.arch)
     model = get_model(args.arch)
@@ -109,35 +115,37 @@ def main():
 
     logger.info('Start traning.')
     logger.info(
-        "Epoch \t Time \t Train Loss \t Train ACC \t test Loss \t test ACC")
+        "Epoch \t Time \t Train Loss \t Train ACC \t Val Loss \t Val ACC")
+
+
     for epoch in range(1, args.epochs + 1):
         start_t = time.time()
         train_loss, train_acc = train(
             model, train_loader, loss_fn, optimizer, epoch, device, scaler, writer, args)
-        test_loss, test_acc = evaluate(model, test_loader, device, args)
+        val_loss, val_acc = evaluate(model, val_loader, device, args)
 
         if args.scheduler == 'cos':
             scheduler.step()
         elif args.scheduler == 'reduce':
-            scheduler.step(test_acc)
+            scheduler.step(val_acc)
 
         writer.add_scalar("Train/Loss", train_loss.item(), epoch)
         writer.add_scalar("Train/Accuracy", train_acc, epoch)
-        writer.add_scalar("Test/Loss", test_loss.item(), epoch)
-        writer.add_scalar("Test/Accuracy", test_acc, epoch)
+        writer.add_scalar("Valid/Loss", val_loss.item(), epoch)
+        writer.add_scalar("Valid/Accuracy", val_acc, epoch)
 
         writer.add_scalars("Loss", {"Train": train_loss.item()}, epoch)
         writer.add_scalars("Accuracy", {"Train": train_acc}, epoch)
-        writer.add_scalars("Loss", {"Test": test_loss.item()}, epoch)
-        writer.add_scalars("Accuracy", {"Test": test_acc}, epoch)
+        writer.add_scalars("Loss", {"Valid": val_loss.item()}, epoch)
+        writer.add_scalars("Accuracy", {"Valid": val_acc}, epoch)
 
         epoch_time = time.time() - start_t
-        logger.info("%d\t %.4f \t %.4f \t %.4f \t %.4f", epoch, epoch_time, train_loss, train_acc,
-                    test_acc)
+        logger.info("%d\t %.4f \t %.4f \t %.4f \t %.4f \t %.4f", epoch, epoch_time, train_loss, train_acc, val_loss,
+                    val_acc)
 
-        is_best =test_acc > best_acc
-        best_acc = max(test_acc, best_acc)
-        writer.add_scalar("Test/Best Accuracy", best_acc, epoch)
+        is_best = val_acc > best_acc
+        best_acc = max(val_acc, best_acc)
+        writer.add_scalar("Valid/Best Accuracy", best_acc, epoch)
         save_checkpoint({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -145,7 +153,7 @@ def main():
             'best_acc': best_acc,
         }, epoch, is_best, save_path=checkpoint_path, save_freq=args.save_freq)
 
-    logger.info("Best test ACC %.4f", best_acc)
+    logger.info("Best val ACC %.4f", best_acc)
     writer.close()
 
 
@@ -183,15 +191,15 @@ def train(model, train_loader, loss_fn, optimizer, epoch, device, scaler, writer
                 if args.mixup:
                     # mixup + label smooth
                     soft_labels_a = smooth_one_hot(
-                        labels_a, classes=8, smoothing=args.label_smooth_value)
+                        labels_a, classes=4, smoothing=args.label_smooth_value)
                     soft_labels_b = smooth_one_hot(
-                        labels_b, classes=8, smoothing=args.label_smooth_value)
+                        labels_b, classes=4, smoothing=args.label_smooth_value)
                     loss = mixup_criterion(
                         loss_fn, outputs, soft_labels_a, soft_labels_b, lam)
                 else:
                     # label smoorth
                     soft_labels = smooth_one_hot(
-                        labels, classes=8, smoothing=args.label_smooth_value)
+                        labels, classes=4, smoothing=args.label_smooth_value)
                     loss = loss_fn(outputs, soft_labels)
             else:
                 if args.mixup:
@@ -221,13 +229,13 @@ def train(model, train_loader, loss_fn, optimizer, epoch, device, scaler, writer
     return train_loss / count, correct / count
 
 
-def evaluate(model, testloader, device, args):
+def evaluate(model, val_loader, device, args):
     model.eval()
     count = 0
     correct = 0
-    test_loss = 0
+    val_loss = 0
     with torch.no_grad():
-        for i, data in enumerate(testloader):
+        for i, data in enumerate(val_loader):
             images, labels = data
             images, labels = images.to(device), labels.to(device)
             if args.Ncrop:
@@ -247,12 +255,12 @@ def evaluate(model, testloader, device, args):
 
             loss = nn.CrossEntropyLoss()(outputs, labels)
 
-            test_loss += loss
+            val_loss += loss
             _, preds = torch.max(outputs, 1)
             correct += torch.sum(preds == labels.data).item()
             count += labels.shape[0]
 
-        return test_loss / count, correct / count
+        return val_loss / count, correct / count
 
 
 if __name__ == '__main__':
