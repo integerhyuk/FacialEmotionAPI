@@ -69,30 +69,25 @@ async def recognize_video(file: UploadFile = File(...), chunks_json: str = Form(
     video_bytes = await file.read()
     frames = await video_to_frames(video_bytes, timestamps)
 
-    # Initialize a dictionary to hold the sum of probabilities for each emotion
     sum_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
     frame_count = 0
 
     for frame in frames:
         image = Image.fromarray(frame)
-        input_tensor = transform(image)
-        input_batch = input_tensor.unsqueeze(0)  # Create a mini-batch as expected by the model
+        input_tensor = transform(image).unsqueeze(0).to(device)  # Move tensor to the correct device
 
         with torch.no_grad():
-            output = model(input_batch)
+            output = model(input_tensor)  # The model is already on the correct device
             probabilities = torch.nn.functional.softmax(output[0], dim=0)
 
-        # Add probabilities to the corresponding emotion
         for idx, emotion in imagenet_classes.items():
             sum_probabilities[emotion] += probabilities[idx].item()
 
         frame_count += 1
 
-    # If there were no frames processed, avoid division by zero
     if frame_count == 0:
         avg_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
     else:
-        # Calculate the average probability for each emotion
         avg_probabilities = {emotion: total_prob / frame_count for emotion, total_prob in sum_probabilities.items()}
 
     return {"predictions": avg_probabilities}
