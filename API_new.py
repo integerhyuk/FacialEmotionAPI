@@ -13,13 +13,11 @@ from models import ResNet18
 
 app = FastAPI()
 
-# Load the model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 checkpoint = torch.load('best_checkpoint.tar', map_location=device)
 model = ResNet18().to(device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
-
 
 transform = transforms.Compose([
     transforms.Grayscale(),
@@ -35,7 +33,7 @@ imagenet_classes = {
     3: "Neutral"
 }
 
-async def video_to_frames(video_bytes, timestamps: List[List[float]]):
+async def video_to_frames(video_bytes, timestamps):
     """Extract frames from video bytes within given timestamps."""
     frames = []
     with tempfile.NamedTemporaryFile(delete=True) as tmp_file:
@@ -45,6 +43,9 @@ async def video_to_frames(video_bytes, timestamps: List[List[float]]):
         fps = cap.get(cv2.CAP_PROP_FPS)
 
         for start, end in timestamps:
+            if start is None or end is None:
+                continue
+
             cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000)  # Start time in milliseconds
             while cap.get(cv2.CAP_PROP_POS_MSEC) <= end * 1000:  # End time in milliseconds
                 success, frame = cap.read()
@@ -54,40 +55,64 @@ async def video_to_frames(video_bytes, timestamps: List[List[float]]):
         cap.release()
     return frames
 
-
-@app.post("/recognize/")
+@app.post("/recognize_video/")
 async def recognize_video(file: UploadFile = File(...), chunks_json: str = Form(...)):
+    print(f"Received chunks_json: {chunks_json}")
     if not file.content_type.startswith("video/"):
         return JSONResponse(content={"error": "This API supports only video files."}, status_code=400)
 
     try:
         chunks_data = json.loads(chunks_json)
         timestamps = [chunk["timestamp"] for chunk in chunks_data["chunks"]]
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Error parsing JSON: {e}")
         return JSONResponse(content={"error": "Invalid or missing JSON data."}, status_code=400)
 
     video_bytes = await file.read()
-    frames = await video_to_frames(video_bytes, timestamps)
+    results = []
 
-    sum_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
-    frame_count = 0
+    for chunk in chunks_data["chunks"]:
+        timestamps = chunk["timestamp"]
+        if timestamps is None or len(timestamps) < 2:
+            print(f"Skipping chunk due to missing or invalid timestamps: {chunk}")
+            continue
 
-    for frame in frames:
-        image = Image.fromarray(frame)
-        input_tensor = transform(image).unsqueeze(0).to(device)  # Move tensor to the correct device
+        start, end = timestamps
+        if start is None or end is None:
+            print(f"Skipping chunk due to missing start or end timestamp: {chunk}")
+            continue
 
-        with torch.no_grad():
-            output = model(input_tensor)  # The model is already on the correct device
-            probabilities = torch.nn.functional.softmax(output[0], dim=0)
+        frames = await video_to_frames(video_bytes, [timestamps])
 
-        for idx, emotion in imagenet_classes.items():
-            sum_probabilities[emotion] += probabilities[idx].item()
+        sum_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
+        frame_count = 0
 
-        frame_count += 1
+        for frame in frames:
+            image = Image.fromarray(frame)
+            input_tensor = transform(image).unsqueeze(0).to(device)
 
-    if frame_count == 0:
-        avg_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
-    else:
-        avg_probabilities = {emotion: total_prob / frame_count for emotion, total_prob in sum_probabilities.items()}
+            with torch.no_grad():
+                output = model(input_tensor)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
 
-    return {"predictions": avg_probabilities}
+            for idx, emotion in imagenet_classes.items():
+                sum_probabilities[emotion] += probabilities[idx].item()
+
+            frame_count += 1
+
+        if frame_count == 0:
+            avg_probabilities = {emotion: 0.0 for emotion in imagenet_classes.values()}
+        else:
+            avg_probabilities = {emotion: total_prob / frame_count for emotion, total_prob in sum_probabilities.items()}
+
+        results.append({
+            "timestamp": timestamps,
+            "text": chunk["text"],
+            "emotion": avg_probabilities
+        })
+
+    return {"result": results}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
